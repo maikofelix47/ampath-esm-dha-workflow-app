@@ -33,6 +33,9 @@ import {
   fetchBillableServices,
   fetchCashPoints,
   fetchPaymentModes,
+  getPatientTodaysBills,
+  getPatientTodaysLatestPendingBill,
+  updateBill,
 } from '../../../shared/services/billing.resource';
 import {
   type PayableBillableService,
@@ -41,6 +44,7 @@ import {
   type PaymentMode,
   type CreateBillDto,
   type CashPoint,
+  type UpdateBillDto,
 } from '../../../shared/types';
 import { PatientCategories } from '../../../shared/constants/patient-category';
 import { VisitTypeUuids } from '../../../shared/constants/visit-types';
@@ -84,6 +88,8 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
   const [selectedInsurancePolicy, setSelectedInsurancePolicy] = useState<string>('');
   const [selectedPatientCategory, setSelectedPatientCategory] = useState<string>('');
   const [patientBills, setPatientBills] = useState<Bill[]>([]);
+  const [todaysPendingBill, setTodaysPendingBill] = useState<Bill>(null);
+  const [todaysPatientBills, setTodaysPatientBills] = useState<Bill[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const session = useSession();
   const locationUuid = session.sessionLocation.uuid;
@@ -123,25 +129,15 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
 
   async function getPatientBills() {
     if (patients) {
-      let bills: Bill[] = [];
       setPatientBills([]);
       for (let i = 0; i < patients.length; i++) {
         const resp = await fetchPatientBills(patients[i].uuid);
-        const todaysBills = getTodaysBills(resp);
-        setPatientBills(todaysBills);
+        const latestPendingBill = getPatientTodaysLatestPendingBill(resp);
+        const todaysBills = getPatientTodaysBills(resp);
+        setTodaysPendingBill(latestPendingBill);
+        setTodaysPatientBills(todaysBills);
       }
     }
-  }
-  function getTodaysBills(bills: Bill[]) {
-    const today = new Date();
-    return bills.filter((b) => {
-      const billDate = new Date(b.dateCreated);
-      return (
-        billDate.getFullYear() === today.getFullYear() &&
-        billDate.getMonth() === today.getMonth() &&
-        billDate.getDate() === today.getDate()
-      );
-    });
   }
   const sendToTriage = async () => {
     if (!validateVisitQueueBill()) return;
@@ -157,21 +153,10 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
         }
 
         // add bill if it was a paying client
-        let createBillResp = null;
-        if (selectedPaymentDetail === PaymentDetail.Paying) {
-          const createBillDto = generateCreateBillDto();
-          if (isValidCreateBillDto(createBillDto)) {
-            createBillResp = await createBill(createBillDto);
-            if (createBillResp) {
-              showAlert('success', 'Bill succesfully created', '');
-            }
-          } else {
-            return false;
-          }
-        }
+        const createBillResp = await createOrUpdateBill();
 
         if ((queueEntryResp && PaymentDetail.Paying && createBillResp) || (queueEntryResp && PaymentDetail.NonPaying)) {
-          onModalClose({ success: true });
+          // onModalClose({ success: true });
         }
       }
     } catch (error) {
@@ -180,6 +165,36 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
       setLoading(false);
     }
   };
+  async function createOrUpdateBill() {
+    let createBillResp = null;
+    if (selectedPaymentDetail === PaymentDetail.Paying) {
+      if (todaysPendingBill) {
+        const updateBillDto = generateUpdateBillDto();
+        if (isValidCreateBillDto(updateBillDto)) {
+          createBillResp = await updateBill(todaysPendingBill.uuid, updateBillDto);
+          if (createBillResp) {
+            showAlert(
+              'success',
+              'Bill succesfully updated',
+              `${todaysPendingBill.receiptNumber} has been succesfully updated with the bill item`,
+            );
+          }
+        }
+      } else {
+        const createBillDto = generateCreateBillDto();
+        if (isValidCreateBillDto(createBillDto)) {
+          createBillResp = await createBill(createBillDto);
+          if (createBillResp) {
+            showAlert('success', 'Bill succesfully created', 'New Bill has been succesfully generated');
+          }
+        } else {
+          return false;
+        }
+      }
+    }
+
+    return createBillResp;
+  }
   function validateVisitQueueBill(): boolean {
     if (!selectedPatient) {
       showAlert('error', 'Please select a patient', '');
@@ -299,12 +314,12 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
     }
   };
   const isValidBillableService = (selectedService: ServicePrice) => {
-    // check if patient has been billed for similar service
+    // check if patient has been billed for similar service today
     let isValid = true;
-    patientBills.forEach((b) => {
+    todaysPatientBills.forEach((b) => {
       const lineItems = b.lineItems;
       lineItems.forEach((l) => {
-        if (l.billableService === selectedService.billableService.display) {
+        if (l.billableService === selectedService.billableService.display && l.paymentStatus === 'PENDING') {
           isValid = false;
         }
       });
@@ -470,6 +485,47 @@ const SendToTriageModal: React.FC<SendToTriageModalProps> = ({
       payments: [],
     };
     return payload;
+  }
+  function generateUpdateBillDto(): UpdateBillDto {
+    const payload: UpdateBillDto = {
+      ...todaysPendingBill,
+      lineItems: [
+        ...(generateUpdateBillLineItems(todaysPendingBill) as any),
+        {
+          billableService: selectedBillableService.billableService.uuid,
+          quantity: 1,
+          price: selectedBillableService.price,
+          priceName: selectedBillableService.name,
+          priceUuid: selectedBillableService.uuid,
+          lineItemOrder: 0,
+          paymentStatus: 'PENDING',
+        },
+      ],
+      cashPoint: selectedCashPoint.uuid,
+      patient: selectedPatient.uuid,
+      status: 'PENDING',
+      payments: [],
+    };
+    return payload;
+  }
+  function generateUpdateBillLineItems(pendingBill: Bill) {
+    const lineItems = pendingBill.lineItems;
+    const updateLineItems = lineItems.map((l) => {
+      const billableService = getBillableServiceByNameAndPaymentMode(l.billableService, l.priceName);
+      return {
+        ...l,
+        billableService: billableService ? billableService.billableService.uuid : l.billableService,
+        price: billableService ? billableService.price : l.price,
+        priceName: billableService ? billableService.name : l.priceName,
+        priceUuid: billableService ? billableService.uuid : l.priceUuid,
+      };
+    });
+    return updateLineItems;
+  }
+  function getBillableServiceByNameAndPaymentMode(serviceName: string, paymentMode: string): ServicePrice {
+    return servicePrices.find((s) => {
+      return s.billableService.display === serviceName && s.name === paymentMode;
+    });
   }
   function isValidCreateBillDto(createBillDto: CreateBillDto): boolean {
     if (!createBillDto.patient) {

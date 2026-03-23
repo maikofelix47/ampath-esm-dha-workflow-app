@@ -56,13 +56,15 @@ export type LineItem = {
   voidedReason?: string;
 };
 
-export type CreateBillDto = {
+export interface CreateBillDto {
   lineItems: LineItem[];
   cashPoint: string;
   patient: string;
   status: PaymentStatus;
   payments: any[];
-};
+}
+
+export interface UpdateBillDto extends CreateBillDto{}
 
 export type CashPoint = {
   uuid: string;
