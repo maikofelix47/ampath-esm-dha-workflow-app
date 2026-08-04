@@ -40,12 +40,14 @@ const AdmissionsDashboard: React.FC = () => {
   const [facilityBills, setFacilityBills] = useState<FacilityEncounterBill[]>([]);
   const [dischargeEncounterBundle, setDischargeEncounterBundle] = useState<FhirEncounterBundle>();
   const [awaitingDischargeEncounterBundle, setAwaitingDischargeEncounterBundle] = useState<FhirEncounterBundle>();
+  const [awaitingGeneralDischargeEncounterBundle, setAwaitingGeneralDischargeEncounterBundle] = useState<FhirEncounterBundle>();
   const [loading, setLoading] = useState<boolean>(false);
   const session = useSession();
   const locationUuid = session.sessionLocation.uuid;
   const { maternityDischargeEncounterTypeUuid } = useConfig<ConfigObject>();
   const { activeVisitEncounterUuids } = useActiveVisitEncounterUuids(locationUuid);
   const sortedDischargeEncounters = useMemo(() => generateDischargeEncounters(), [dischargeEncounterBundle]);
+  const generalDischargeEncounterTypeUuid = '181820aa-88c9-479b-9077-af92f5364329';
 
   const getPatient = (patients: Patient[]) => {
     if (patients) {
@@ -116,25 +118,40 @@ const AdmissionsDashboard: React.FC = () => {
   };
   const getAdmittedPatients = async () => {
     const res = await getAdmittedPatientsData(locationUuid);
-    console.log('admitted Patients', res);
     setAdmittedPatientsData(res);
     setLoading(false);
   };
   const getAwaitingDischargeEncounters = useCallback(async () => {
-    const res = await getDichargedEncounters(maternityDischargeEncounterTypeUuid, locationUuid);
+  
+    const maternityDischarge = await getDichargedEncounters(maternityDischargeEncounterTypeUuid, locationUuid);
+    const generalDischarge = await  getDichargedEncounters(generalDischargeEncounterTypeUuid, locationUuid);
     
-    if (res && res.entry) {
-      const filteredEntries = res.entry.filter(entry => {
+    if (maternityDischarge && maternityDischarge.entry) {
+      const filteredEntries = maternityDischarge.entry.filter(entry => {
         const resource = entry.resource;
         return resource && resource.resourceType === 'Encounter' && activeVisitEncounterUuids.includes(resource.id);
       });
       setAwaitingDischargeEncounterBundle({
-        ...res,
+        ...maternityDischarge,
         entry: filteredEntries,
         total: filteredEntries.length
       });
     } else {
-      setAwaitingDischargeEncounterBundle(res);
+      setAwaitingDischargeEncounterBundle(maternityDischarge);
+    }
+
+     if (generalDischarge && generalDischarge.entry) {
+      const filteredEntries = generalDischarge.entry.filter(entry => {
+        const resource = entry.resource;
+        return resource && resource.resourceType === 'Encounter' && activeVisitEncounterUuids.includes(resource.id);
+      });
+      setAwaitingGeneralDischargeEncounterBundle({
+        ...generalDischarge,
+        entry: filteredEntries,
+        total: filteredEntries.length
+      });
+    } else {
+      setAwaitingGeneralDischargeEncounterBundle(generalDischarge);
     }
   }, [maternityDischargeEncounterTypeUuid, locationUuid, activeVisitEncounterUuids]);
   
